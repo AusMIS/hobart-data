@@ -241,15 +241,26 @@ def _write_k(out_dir: Path, h: pd.Series, k9: float) -> dict:
         kp = science.fetch_kp(h.index[0], h.index[-1]).reindex(k.index)
         payload['kp'] = [None if not np.isfinite(v) else round(float(v), 3)
                          for v in kp]
-        pair = pd.concat([k[k.good].K, kp.rename('Kp')], axis=1).dropna()
-        if len(pair) > 10:
-            print(f'  K vs Kp over {len(pair)} bins: '
-                  f'rho = {pair.K.corr(pair.Kp, method="spearman"):.2f}, '
-                  f'mean |K-Kp| = {(pair.K - pair.Kp).abs().mean():.2f} '
-                  f'(K9 = {k9:.0f} nT)')
     except Exception as exc:                                   # noqa: BLE001
         # A missing Kp panel is a smaller loss than a missing feed.
         print(f'  Kp unavailable ({exc}); local K written without it')
+        kp = None
+
+    # Reported separately: this is a diagnostic, and a diagnostic that can
+    # discard the data it is describing is worse than no diagnostic. Spearman
+    # via pandas' own method needs scipy, which is not installed here, so the
+    # ranks are correlated directly - the same number without the dependency.
+    if kp is not None:
+        try:
+            pair = pd.concat([k[k.good].K, kp.rename('Kp')], axis=1,
+                             sort=True).dropna()
+            if len(pair) > 10:
+                rho = pair.K.rank().corr(pair.Kp.rank())
+                print(f'  K vs Kp over {len(pair)} bins: rho = {rho:.2f}, '
+                      f'mean |K-Kp| = {(pair.K - pair.Kp).abs().mean():.2f} '
+                      f'(K9 = {k9:.0f} nT)')
+        except Exception as exc:                               # noqa: BLE001
+            print(f'  agreement not reported ({exc})')
 
     write_json(out_dir / 'k.json', payload)
     # A URL, not the arrays: index.json is rewritten every run and these are not.
