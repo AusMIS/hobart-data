@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# The raw .gz archive the fetcher builds. In the workflow this is an
+# actions/cache entry, never a commit; locally it is hundreds of megabytes.
+WDCData/

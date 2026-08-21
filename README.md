@@ -32,14 +32,25 @@ baseline is re-set at instrument changes. They are not absolute field values.
 ## What is in here
 
 ```
-feed/hbt/index.json      metadata: window, sample interval, data_end (~0.5 kB)
+feed/hbt/index.json      the manifest: window, sample interval, data_end, and
+                         the panels the page draws (~1 kB)
 feed/hbt/recent90.json   the rolling window up to the end of yesterday (~1 MB)
 feed/hbt/today.json      the current UT day only (~12 kB)
+feed/hbt/k.json          3-hourly local K and planetary Kp (~25 kB)
+feed/hbt/overview.png    Morlet scalogram of H (~500 kB)
+feed/hbt/wavelet.json    what the scalogram covers
 ```
 
-The split is deliberate. `today.json` is the only file that changes on a normal
-30-minute cycle, so the repository grows by tens of kilobytes a day rather than
-a megabyte per update.
+The split is deliberate, and it is about git history rather than download size.
+`today.json` is the only file that changes on a normal 30-minute cycle, so the
+repository grows by tens of kilobytes a day rather than a megabyte per update.
+`k.json` moves once every three hours, and the scalogram only when the rolling
+window does — once a UT day.
+
+**The manifest decides what the page draws.** `index.json` carries a `panels`
+list, and the site's explorer renders exactly that and nothing else — it does
+not know what an observatory measures. Adding a panel is a change here, not a
+change to the website.
 
 The two files abut exactly: concatenate `recent90` then `today` and the minute
 grid is continuous. `H`, `D` and `Z` are on a regular one-minute grid with no
@@ -56,6 +67,34 @@ Quantisation costs about 0.0015 nT, which is far below the instrument's own
 resolution but is a real loss: this feed is for display, not for analysis.
 Decoded values have been checked against the source parquet at a maximum error
 of 0.0074 nT including rounding.
+
+### The derived indices
+
+`k.json` carries a **local K index** — the standard quasi-logarithmic classes
+applied to the 3-hour range of H with the regular daily (Sq) variation removed —
+alongside the **planetary Kp** from [GFZ Potsdam](https://kp.gfz.de/), which is
+entirely independent of this observatory and so is a fair check on it. Kp is
+licensed CC BY 4.0 and the page carries the attribution.
+
+The station constant is Hobart's **published K9 lower limit of 500 nT**, not a
+value fitted to make the two indices agree. That distinction matters: the
+home-built fluxgate on the same site *does* fit its constant, because it is
+uncalibrated and has no published one, and using a fitted value here would
+quietly make K mean two different things on two pages that invite comparison.
+The choice is checkable — every run prints the agreement, currently
+ρ = 0.72 and mean |K − Kp| = 0.64 over 719 bins, and 500 nT is also the best of
+the candidates tried, so the published value and the data agree.
+
+A bin whose 180 minutes are mostly missing is marked `good: false` and drawn
+greyed: the range of a mostly-absent bin is a lower bound, not a measurement.
+
+`overview.png` is a Morlet scalogram of H, in dB above the record's own quiet
+level, encoded as a palette PNG — RdBu_r has exactly 256 entries, so shipping
+the colormap index with the table as the PNG palette is bit-exact rather than an
+approximation. It reaches down only to a **two-minute period**, because this is
+1-minute data: Pc3 and most of Pc4 are simply not in this record. Unlike the
+fluxgate page there are no fine tiles, since every rebuild of those would add
+several megabytes to this repository's history for good.
 
 ### Gaps
 
@@ -80,8 +119,17 @@ new data produces byte-identical files and makes no commit. The Bureau writes
 its daily file when new data arrives rather than on a fixed schedule, so quiet
 periods of an hour or more are ordinary.
 
-The two scripts are vendored copies from the `aurora` analysis repository, kept
-here so the workflow has no external dependency.
+The scalogram is the expensive step, about 100 seconds, so it is computed only
+when the rolling window actually moves rather than on all 48 daily cycles.
+
+`scripts/wdc_fetch.py` and `scripts/build_feed.py` are vendored copies from the
+`aurora` analysis repository, and `scripts/science.py` is a port of the analysis
+worked out for the home-built fluxgate in `AusMIS/final-code` — kept here rather
+than imported so the workflow has no external dependency. What is shared with
+that repository is the *contract*, not the code: the int16 encoding, and the
+manifest the site's `assets/js/explorer.js` reads. Both sides assert that the
+browser's decode inverts the encoding exactly, so a change to either fails a
+build instead of silently shifting a page's traces.
 
 ## Using the feed elsewhere
 

@@ -2,3 +2,10 @@ numpy
 pandas
 pyarrow
 requests
+
+# For the analysis in science.py. matplotlib is here only for the RdBu_r
+# lookup table, which is deliberately the same one the fluxgate page's tiles
+# use - hard-coding a copy would let the two pages' colour keys drift apart.
+PyWavelets
+matplotlib
+pillow
