@@ -1,0 +1,82 @@
+name: update feed
+
+on:
+  schedule:
+    # every 30 minutes. GitHub's scheduler is best-effort and often runs late
+    # under load; the page tolerates that, warning only past two hours.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two runs committing to the same branch would race. Queue instead of cancel:
+# a cancelled run leaves the raw cache unsaved.
+concurrency:
+  group: update-feed
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Window boundaries
+        id: win
+        run: |
+          echo "start=$(date -u -d '95 days ago' +%F)" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      # The raw .gz files are what make the fetch cheap: a finalised day already
+      # on disk costs no request at all, so a run downloads only the current day
+      # and anything new. Without the cache every run would pull ~290 MB from the
+      # Bureau, 48 times a day.
+      #
+      # The key changes once a day rather than once a run, so only the first run
+      # of each day writes a new cache entry; the rest restore it and skip the
+      # save. Anything they fetch beyond it is re-fetched tomorrow, which is
+      # nearly free because it is one or two days of files.
+      - name: Restore raw cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: WDCData
+          key: wdc-hbt-${{ steps.win.outputs.day }}
+          restore-keys: wdc-hbt-
+
+      # Exits non-zero, naming the days, if the listing offers a day that is not
+      # in the cache when the run finishes - so a hole in the record fails the
+      # workflow instead of quietly producing a feed with a gap in it.
+      - name: Fetch observatory data
+        run: |
+          python scripts/wdc_fetch.py \
+            --station hbt \
+            --start ${{ steps.win.outputs.start }} \
+            --out WDCData \
+            --minute-only
+
+      - name: Build feed
+        run: python scripts/build_feed.py --station hbt --data WDCData --out feed
+
+      # build_feed writes nothing that is not derived from the data itself - no
+      # wall-clock timestamp - so a poll that finds nothing new leaves the files
+      # byte-identical and there is simply nothing to commit.
+      - name: Commit if changed
+        run: |
+          if [ -z "$(git status --porcelain feed)" ]; then
+            echo "feed unchanged, nothing to commit"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add feed
+          git commit -m "feed: data to $(python -c "import json;print(json.load(open('feed/hbt/index.json'))['data_end'])")"
+          git push
