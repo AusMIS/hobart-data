@@ -177,6 +177,57 @@ def write_analysis(out_dir: Path, h: pd.Series, k9: float,
     extra: dict = {}
 
     # --- local K, and Kp to check it against ------------------------------
+    try:
+        extra.update(_write_k(out_dir, h, k9))
+    except Exception as exc:                                   # noqa: BLE001
+        # Nothing derived is worth the feed itself: this runs unattended every
+        # half hour, and a page with three channels and no K beats a page that
+        # stopped updating three days ago.
+        print(f'  K unavailable ({exc}); channels written without it')
+        if (out_dir / 'k.json').exists():
+            extra['k'] = 'k.json'
+
+    # --- scalogram --------------------------------------------------------
+    meta_path = out_dir / 'wavelet.json'
+    if not rebuild_wavelet and meta_path.exists():
+        print('  scalogram: unchanged')
+        extra['wavelet'] = json.loads(meta_path.read_text())
+        return extra
+    try:
+        block = science.scalogram(h, PERIODS)
+        with np.errstate(invalid='ignore'):
+            limit = float(np.nanpercentile(np.abs(block), 99))
+        # A window with nothing in it yields a NaN colour limit, and json.dumps
+        # would write a bare NaN - which is not JSON, and which the page can
+        # only report as a broken feed. Better to ship no panel.
+        if not np.isfinite(limit):
+            raise ValueError('no finite power in the scalogram')
+        overview = science.bin_columns(block, wavelet_bin)
+        png = science.palette_png(overview, limit)
+        (out_dir / 'overview.png').write_bytes(png)
+        meta = {
+            'periods': [float(PERIODS[0]), float(PERIODS[-1])],
+            'limit': limit,
+            'rows': len(PERIODS),
+            'overview': {'src': 'overview.png', 'cols': int(overview.shape[1]),
+                         'bin': wavelet_bin},
+            # No fine tiles. On the fluxgate page they are seven static files
+            # committed once; here every rebuild would be a fresh 5 MB in the
+            # history of a repo that already grows by a megabyte a day.
+            'tiles': [],
+        }
+        meta_path.write_text(json.dumps(meta, separators=(',', ':'), allow_nan=False))
+        extra['wavelet'] = meta
+        print(f'  scalogram: {overview.shape[1]} columns at {wavelet_bin} min, '
+              f'{len(png) / 1024:.0f} kB, +/-{limit:.1f} dB')
+    except Exception as exc:                                   # noqa: BLE001
+        print(f'  scalogram failed ({exc}); panel omitted')
+        if meta_path.exists():
+            extra['wavelet'] = json.loads(meta_path.read_text())
+    return extra
+
+
+def _write_k(out_dir: Path, h: pd.Series, k9: float) -> dict:
     dh = science.sq_removed(h)
     k = science.local_k(dh, k9=k9)
     payload = {
@@ -201,46 +252,16 @@ def write_analysis(out_dir: Path, h: pd.Series, k9: float,
         print(f'  Kp unavailable ({exc}); local K written without it')
 
     write_json(out_dir / 'k.json', payload)
-    extra['k'] = 'k.json'          # a URL, not the array: index.json is
-                                   # rewritten every run and this is not
-
-    # --- scalogram --------------------------------------------------------
-    meta_path = out_dir / 'wavelet.json'
-    if not rebuild_wavelet and meta_path.exists():
-        print('  scalogram: unchanged')
-        extra['wavelet'] = json.loads(meta_path.read_text())
-        return extra
-    try:
-        block = science.scalogram(h, PERIODS)
-        limit = float(np.nanpercentile(np.abs(block), 99))
-        overview = science.bin_columns(block, wavelet_bin)
-        png = science.palette_png(overview, limit)
-        (out_dir / 'overview.png').write_bytes(png)
-        meta = {
-            'periods': [float(PERIODS[0]), float(PERIODS[-1])],
-            'limit': limit,
-            'rows': len(PERIODS),
-            'overview': {'src': 'overview.png', 'cols': int(overview.shape[1]),
-                         'bin': wavelet_bin},
-            # No fine tiles. On the fluxgate page they are seven static files
-            # committed once; here every rebuild would be a fresh 5 MB in the
-            # history of a repo that already grows by a megabyte a day.
-            'tiles': [],
-        }
-        meta_path.write_text(json.dumps(meta, separators=(',', ':')))
-        extra['wavelet'] = meta
-        print(f'  scalogram: {overview.shape[1]} columns at {wavelet_bin} min, '
-              f'{len(png) / 1024:.0f} kB, +/-{limit:.1f} dB')
-    except Exception as exc:                                   # noqa: BLE001
-        print(f'  scalogram failed ({exc}); panel omitted')
-        if meta_path.exists():
-            extra['wavelet'] = json.loads(meta_path.read_text())
-    return extra
+    # A URL, not the arrays: index.json is rewritten every run and these are not.
+    return {'k': 'k.json'}
 
 
 def write_json(path: Path, payload: dict) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, separators=(',', ':'))
+    # allow_nan=False on purpose: Python writes a bare NaN, which is not valid
+    # JSON and which a browser can only report as a broken feed. Raising here
+    # means the caller drops that part of the payload instead of shipping it.
+    text = json.dumps(payload, separators=(',', ':'), allow_nan=False)
     # only rewrite when the content actually changes, so an unchanged poll
     # leaves the file (and therefore git) alone
     if path.exists() and path.read_text() == text:
